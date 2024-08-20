@@ -27,6 +27,7 @@
 #include "framesync.h"
 #include "internal.h"
 #include "video.h"
+#include "boxfilter.h"
 
 enum FilterModes {
     BASIC,
@@ -224,7 +225,7 @@ static int guided_##name(AVFilterContext *ctx, GuidedContext *s,                
     float *meanA = s->meanA;                                                            \
     float *meanB = s->meanB;                                                            \
                                                                                         \
-    for (int i = 0;i < h;i++) {                                                         \
+    for (int i = 0;i < h;i++) {                                                       \
         for (int j = 0;j < w;j++) {                                                     \
             int x = i * w + j;                                                          \
             I[x]  = src[(i * src_stride + j) * sub] / maxval;                           \
@@ -234,7 +235,7 @@ static int guided_##name(AVFilterContext *ctx, GuidedContext *s,                
         }                                                                               \
     }                                                                                   \
                                                                                         \
-    t.width  = w;                                                                       \
+    /*t.width  = w;                                                                       \
     t.height = h;                                                                       \
     t.srcStride = w;                                                                    \
     t.dstStride = w;                                                                    \
@@ -249,7 +250,12 @@ static int guided_##name(AVFilterContext *ctx, GuidedContext *s,                
     ff_filter_execute(ctx, s->box_slice, &t, NULL, FFMIN(h, nb_threads));               \
     t.src = IP;                                                                         \
     t.dst = meanIP;                                                                     \
-    ff_filter_execute(ctx, s->box_slice, &t, NULL, FFMIN(h, nb_threads));               \
+    ff_filter_execute(ctx, s->box_slice, &t, NULL, FFMIN(h, nb_threads));*/               \
+    float * work    = aligned_alloc(32, (width*(height+2))*sizeof(float));              \
+    boxfilter(I, meanI, radius, height, width, work);                                   \
+    boxfilter(II, meanII, radius, height, width, work);                                             \
+    boxfilter(P, meanP, radius, height, width, work);                                               \
+    boxfilter(IP, meanIP, radius, height, width, work);                                             \
                                                                                         \
     for (int i = 0;i < h;i++) {                                                         \
         for (int j = 0;j < w;j++) {                                                     \
@@ -261,12 +267,15 @@ static int guided_##name(AVFilterContext *ctx, GuidedContext *s,                
         }                                                                               \
     }                                                                                   \
                                                                                         \
-    t.src = A;                                                                          \
+    /*t.src = A;                                                                          \
     t.dst = meanA;                                                                      \
     ff_filter_execute(ctx, s->box_slice, &t, NULL, FFMIN(h, nb_threads));               \
     t.src = B;                                                                          \
     t.dst = meanB;                                                                      \
-    ff_filter_execute(ctx, s->box_slice, &t, NULL, FFMIN(h, nb_threads));               \
+    ff_filter_execute(ctx, s->box_slice, &t, NULL, FFMIN(h, nb_threads));*/               \
+    boxfilter(A, meanA, radius, height, width, work);                                               \
+    boxfilter(B, meanB, radius, height, width, work);                                               \
+    free(work); \ 
                                                                                         \
     for (int i = 0;i < height;i++) {                                                    \
         for (int j = 0;j < width;j++) {                                                 \
@@ -275,7 +284,13 @@ static int guided_##name(AVFilterContext *ctx, GuidedContext *s,                
                                       meanB[x] * maxval;                                \
         }                                                                               \
     }                                                                                   \
-                                                                                        \
+    /*matmul(I, P, IP, height, width);*/                                                            \
+    /*matmul(I, I, II, height, width);*/                                                            \
+    /*diffmatmul(meanIP, meanI, meanP, cov_Ip, height, width);                                 \
+    diffmatmul(meanII, meanI, meanI, varI, n, ld);                                  \
+    matdivconst(cov_Ip, var_I, a, n, ld, eps);                                          \
+    diffmatmul(mean_p, a, mean_I, b, n, ld);*/                                            \
+    /*addmatmul(mean_b, mean_a, I, q, n, ld);*/                                             \                                                                      
     return ret;                                                                         \
 }
 
