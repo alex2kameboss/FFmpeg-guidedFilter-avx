@@ -74,6 +74,8 @@ typedef struct GuidedContext {
     float *meanA;
     float *meanB;
 
+    float *work;
+
     int (*box_slice)(AVFilterContext *ctx, void *arg, int jobnr, int nb_jobs);
 } GuidedContext;
 
@@ -224,6 +226,7 @@ static int guided_##name(AVFilterContext *ctx, GuidedContext *s,                
     float *B = s->B;                                                                    \
     float *meanA = s->meanA;                                                            \
     float *meanB = s->meanB;                                                            \
+    float *work  = s->work;                                                             \
                                                                                         \
     for (int i = 0;i < h;i++) {                                                       \
         for (int j = 0;j < w;j++) {                                                     \
@@ -251,7 +254,6 @@ static int guided_##name(AVFilterContext *ctx, GuidedContext *s,                
     t.src = IP;                                                                         \
     t.dst = meanIP;                                                                     \
     ff_filter_execute(ctx, s->box_slice, &t, NULL, FFMIN(h, nb_threads));*/               \
-    float * work    = aligned_alloc(32, (width*(height+2))*sizeof(float));              \
     boxfilter(I, meanI, radius, height, width, work);                                   \
     boxfilter(II, meanII, radius, height, width, work);                                             \
     boxfilter(P, meanP, radius, height, width, work);                                               \
@@ -275,7 +277,6 @@ static int guided_##name(AVFilterContext *ctx, GuidedContext *s,                
     ff_filter_execute(ctx, s->box_slice, &t, NULL, FFMIN(h, nb_threads));*/               \
     boxfilter(A, meanA, radius, height, width, work);                                               \
     boxfilter(B, meanB, radius, height, width, work);                                               \
-    free(work); \ 
                                                                                         \
     for (int i = 0;i < height;i++) {                                                    \
         for (int j = 0;j < width;j++) {                                                 \
@@ -382,6 +383,7 @@ static int config_output(AVFilterLink *outlink)
     s->B      = av_calloc(w * h, sizeof(*s->B));
     s->meanA  = av_calloc(w * h, sizeof(*s->meanA));
     s->meanB  = av_calloc(w * h, sizeof(*s->meanA));
+    s->work   = av_calloc(w * (h +2 ), sizeof(*s->work));
 
     if (!s->I || !s->II || !s->P || !s->IP || !s->meanI || !s->meanII || !s->meanP ||
         !s->meanIP || !s->A || !s->B || !s->meanA || !s->meanB)
@@ -488,6 +490,7 @@ static av_cold void uninit(AVFilterContext *ctx)
     av_freep(&s->B);
     av_freep(&s->meanA);
     av_freep(&s->meanB);
+    av_freep(&s->work);
 
     return;
 }
