@@ -75,8 +75,13 @@ typedef struct GuidedContext {
     float *meanB;
 
     float *work;
+    float *work1;
+    float *work2;
+    float *work3;
 
     int (*box_slice)(AVFilterContext *ctx, void *arg, int jobnr, int nb_jobs);
+    int (*parallel_avx_batch1)(AVFilterContext *ctx, void *arg, int jobnr, int nb_jobs);
+    int (*parallel_avx_batch2)(AVFilterContext *ctx, void *arg, int jobnr, int nb_jobs);
 } GuidedContext;
 
 #define OFFSET(x) offsetof(GuidedContext, x)
@@ -145,6 +150,82 @@ static int box_slice(AVFilterContext *ctx, void *arg, int jobnr, int nb_jobs)
     return 0;
 }
 
+static int parallel_avx_batch1(AVFilterContext *ctx, void *arg, int jobnr, int nb_jobs) {
+    GuidedContext *s = ctx->priv;
+    ThreadData *t = arg;
+
+    const int width  = t->width;
+    const int height = t->height;
+    const int src_stride = t->srcStride;
+    const int dst_stride = t->dstStride;
+    const int radius = s->radius;
+
+    float *I = s->I;          
+    float *II = s->II;        
+    float *P = s->P;          
+    float *IP = s->IP;        
+    float *meanI = s->meanI;  
+    float *meanII = s->meanII;
+    float *meanP = s->meanP;  
+    float *meanIP = s->meanIP;
+    float *A = s->A;          
+    float *B = s->B;          
+    float *meanA = s->meanA;  
+    float *meanB = s->meanB;  
+    float *work  = s->work;
+    float *work1 = s->work1;
+    float *work2 = s->work2;
+    float *work3 = s->work3;
+
+    if ( jobnr == 0 ) {
+        boxfilter(I, meanI, radius, height, width, work);
+    }
+    if ( jobnr == 1 ) {
+        boxfilter(II, meanII, radius, height, width, work1);
+    }
+    if ( jobnr == 2 ) {
+        boxfilter(P, meanP, radius, height, width, work2);
+    }
+    if ( jobnr == 3 ) {
+        boxfilter(IP, meanIP, radius, height, width, work3);
+    }
+    return 0;
+}
+
+static int parallel_avx_batch2(AVFilterContext *ctx, void *arg, int jobnr, int nb_jobs) {
+    GuidedContext *s = ctx->priv;
+    ThreadData *t = arg;
+
+    const int width  = t->width;
+    const int height = t->height;
+    const int src_stride = t->srcStride;
+    const int dst_stride = t->dstStride;
+    const int radius = s->radius;
+
+    float *I = s->I;          
+    float *II = s->II;        
+    float *P = s->P;          
+    float *IP = s->IP;        
+    float *meanI = s->meanI;  
+    float *meanII = s->meanII;
+    float *meanP = s->meanP;  
+    float *meanIP = s->meanIP;
+    float *A = s->A;          
+    float *B = s->B;          
+    float *meanA = s->meanA;  
+    float *meanB = s->meanB;  
+    float *work  = s->work;
+    float *work1 = s->work1;
+
+    if ( jobnr == 0 ) {
+        boxfilter(A, meanA, radius, height, width, work);
+    }
+    if ( jobnr == 1 ) {
+        boxfilter(B, meanB, radius, height, width, work1);
+    }
+    return 0;
+}
+
 static const enum AVPixelFormat pix_fmts[] = {
     AV_PIX_FMT_YUVA444P, AV_PIX_FMT_YUV444P, AV_PIX_FMT_YUV440P,
     AV_PIX_FMT_YUVJ444P, AV_PIX_FMT_YUVJ440P,
@@ -193,6 +274,8 @@ static int config_input(AVFilterLink *inlink)
 
     s->nb_planes = av_pix_fmt_count_planes(inlink->format);
     s->box_slice = box_slice;
+    s->parallel_avx_batch1 = parallel_avx_batch1;
+    s->parallel_avx_batch2 = parallel_avx_batch2;
     return 0;
 }
 
@@ -218,7 +301,7 @@ static int guided_##name(AVFilterContext *ctx, GuidedContext *s,                
     float *II = s->II;                                                                  \
     float *P = s->P;                                                                    \
     float *IP = s->IP;                                                                  \
-    float *meanI = s->meanI;                                                             \
+    float *meanI = s->meanI;                                                            \
     float *meanII = s->meanII;                                                          \
     float *meanP = s->meanP;                                                            \
     float *meanIP = s->meanIP;                                                          \
@@ -228,7 +311,7 @@ static int guided_##name(AVFilterContext *ctx, GuidedContext *s,                
     float *meanB = s->meanB;                                                            \
     float *work  = s->work;                                                             \
                                                                                         \
-    for (int i = 0;i < h;i++) {                                                       \
+    for (int i = 0;i < h;i++) {                                                         \
         for (int j = 0;j < w;j++) {                                                     \
             int x = i * w + j;                                                          \
             I[x]  = src[(i * src_stride + j) * sub] / maxval;                           \
@@ -238,11 +321,11 @@ static int guided_##name(AVFilterContext *ctx, GuidedContext *s,                
         }                                                                               \
     }                                                                                   \
                                                                                         \
-    /*t.width  = w;                                                                       \
+    t.width  = w;                                                                       \
     t.height = h;                                                                       \
     t.srcStride = w;                                                                    \
     t.dstStride = w;                                                                    \
-    t.src = I;                                                                          \
+    /*t.src = I;                                                                        \
     t.dst = meanI;                                                                      \
     ff_filter_execute(ctx, s->box_slice, &t, NULL, FFMIN(h, nb_threads));               \
     t.src = II;                                                                         \
@@ -253,11 +336,15 @@ static int guided_##name(AVFilterContext *ctx, GuidedContext *s,                
     ff_filter_execute(ctx, s->box_slice, &t, NULL, FFMIN(h, nb_threads));               \
     t.src = IP;                                                                         \
     t.dst = meanIP;                                                                     \
-    ff_filter_execute(ctx, s->box_slice, &t, NULL, FFMIN(h, nb_threads));*/               \
-    boxfilter(I, meanI, radius, height, width, work);                                   \
-    boxfilter(II, meanII, radius, height, width, work);                                             \
-    boxfilter(P, meanP, radius, height, width, work);                                               \
-    boxfilter(IP, meanIP, radius, height, width, work);                                             \
+    ff_filter_execute(ctx, s->box_slice, &t, NULL, FFMIN(h, nb_threads));*/             \
+    if ( nb_threads >= 4 ) {                                                            \
+        ff_filter_execute(ctx, s->parallel_avx_batch1, &t, NULL, 4);                    \
+    } else {                                                                            \
+        boxfilter(I, meanI, radius, height, width, work);                               \
+        boxfilter(II, meanII, radius, height, width, work);                             \
+        boxfilter(P, meanP, radius, height, width, work);                               \
+        boxfilter(IP, meanIP, radius, height, width, work);                             \
+    }                                                                                   \
                                                                                         \
     for (int i = 0;i < h;i++) {                                                         \
         for (int j = 0;j < w;j++) {                                                     \
@@ -269,14 +356,18 @@ static int guided_##name(AVFilterContext *ctx, GuidedContext *s,                
         }                                                                               \
     }                                                                                   \
                                                                                         \
-    /*t.src = A;                                                                          \
+    /*t.src = A;                                                                        \
     t.dst = meanA;                                                                      \
     ff_filter_execute(ctx, s->box_slice, &t, NULL, FFMIN(h, nb_threads));               \
     t.src = B;                                                                          \
     t.dst = meanB;                                                                      \
-    ff_filter_execute(ctx, s->box_slice, &t, NULL, FFMIN(h, nb_threads));*/               \
-    boxfilter(A, meanA, radius, height, width, work);                                               \
-    boxfilter(B, meanB, radius, height, width, work);                                               \
+    ff_filter_execute(ctx, s->box_slice, &t, NULL, FFMIN(h, nb_threads));*/             \
+    if ( nb_threads >= 2 ) {                                                            \
+        ff_filter_execute(ctx, s->parallel_avx_batch2, &t, NULL, 2);                    \
+    } else {                                                                            \
+        boxfilter(A, meanA, radius, height, width, work);                               \
+        boxfilter(B, meanB, radius, height, width, work);                               \
+    }                                                                                   \
                                                                                         \
     for (int i = 0;i < height;i++) {                                                    \
         for (int j = 0;j < width;j++) {                                                 \
@@ -285,13 +376,13 @@ static int guided_##name(AVFilterContext *ctx, GuidedContext *s,                
                                       meanB[x] * maxval;                                \
         }                                                                               \
     }                                                                                   \
-    /*matmul(I, P, IP, height, width);*/                                                            \
-    /*matmul(I, I, II, height, width);*/                                                            \
-    /*diffmatmul(meanIP, meanI, meanP, cov_Ip, height, width);                                 \
-    diffmatmul(meanII, meanI, meanI, varI, n, ld);                                  \
+    /*matmul(I, P, IP, height, width);*/                                                \
+    /*matmul(I, I, II, height, width);*/                                                \
+    /*diffmatmul(meanIP, meanI, meanP, cov_Ip, height, width);                          \
+    diffmatmul(meanII, meanI, meanI, varI, n, ld);                                      \
     matdivconst(cov_Ip, var_I, a, n, ld, eps);                                          \
-    diffmatmul(mean_p, a, mean_I, b, n, ld);*/                                            \
-    /*addmatmul(mean_b, mean_a, I, q, n, ld);*/                                             \                                                                      
+    diffmatmul(mean_p, a, mean_I, b, n, ld);*/                                          \
+    /*addmatmul(mean_b, mean_a, I, q, n, ld);*/                                         \                                                                      
     return ret;                                                                         \
 }
 
@@ -384,6 +475,9 @@ static int config_output(AVFilterLink *outlink)
     s->meanA  = av_calloc(w * h, sizeof(*s->meanA));
     s->meanB  = av_calloc(w * h, sizeof(*s->meanA));
     s->work   = av_calloc(w * (h +2 ), sizeof(*s->work));
+    s->work1  = av_calloc(w * (h +2 ), sizeof(*s->work1));
+    s->work2  = av_calloc(w * (h +2 ), sizeof(*s->work2));
+    s->work3  = av_calloc(w * (h +2 ), sizeof(*s->work3));
 
     if (!s->I || !s->II || !s->P || !s->IP || !s->meanI || !s->meanII || !s->meanP ||
         !s->meanIP || !s->A || !s->B || !s->meanA || !s->meanB)
@@ -491,6 +585,9 @@ static av_cold void uninit(AVFilterContext *ctx)
     av_freep(&s->meanA);
     av_freep(&s->meanB);
     av_freep(&s->work);
+    av_freep(&s->work1);
+    av_freep(&s->work2);
+    av_freep(&s->work3);
 
     return;
 }
